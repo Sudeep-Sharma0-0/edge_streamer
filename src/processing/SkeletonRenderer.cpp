@@ -58,23 +58,12 @@ void SkeletonRenderer::Render(cv::Mat &image, const InferenceResult &result,
 
   const int frame_w = image.cols;
   const int frame_h = image.rows;
+  const auto &limbs = GetLimbConnections();
 
-  const float MODEL_DIM = 640.0f;
-  const float scale = std::min(MODEL_DIM / frame_w, MODEL_DIM / frame_h);
-  const float pad_x = (MODEL_DIM - (frame_w * scale)) / 2.0f;
-  const float pad_y = (MODEL_DIM - (frame_h * scale)) / 2.0f;
-
-  auto get_true_pt = [&](const auto &kp) -> cv::Point {
-    float norm_x = kp.GetPixelX(10000) / 10000.0f;
-    float norm_y = kp.GetPixelY(10000) / 10000.0f;
-
-    int true_x = static_cast<int>(((norm_x * MODEL_DIM) - pad_x) / scale);
-    int true_y = static_cast<int>(((norm_y * MODEL_DIM) - pad_y) / scale);
-    return cv::Point(true_x, true_y);
-  };
+  const int OFFSET_X = 18;
+  const int OFFSET_Y = 10;
 
   for (const auto &det : result.detections) {
-
     if (visual_cfg.draw_bounding_box) {
       int x = static_cast<int>(det.x_min * frame_w);
       int y = static_cast<int>(det.y_min * frame_h);
@@ -88,22 +77,60 @@ void SkeletonRenderer::Render(cv::Mat &image, const InferenceResult &result,
 
       cv::rectangle(image, cv::Rect(x, y, w, h), cv::Scalar(0, 255, 0),
                     visual_cfg.line_thickness, cv::LINE_AA);
+
+      std::ostringstream label_ss;
+      label_ss << det.label << " " << std::fixed << std::setprecision(2)
+               << (det.confidence * 100.0f) << "%";
+      std::string label_str = label_ss.str();
+
+      int baseline = 0;
+      cv::Size label_size = cv::getTextSize(label_str, cv::FONT_HERSHEY_SIMPLEX,
+                                            0.45, 1, &baseline);
+      int label_y = std::max(y, label_size.height + 4);
+
+      cv::rectangle(image, cv::Point(x, label_y - label_size.height - 4),
+                    cv::Point(x + label_size.width + 4, label_y + baseline - 2),
+                    cv::Scalar(0, 255, 0), cv::FILLED);
+
+      cv::putText(image, label_str, cv::Point(x + 2, label_y - 2),
+                  cv::FONT_HERSHEY_SIMPLEX, 0.45, cv::Scalar(0, 0, 0), 1,
+                  cv::LINE_AA);
+    }
+
+    auto get_calibrated_pt = [&](const auto &kp) -> cv::Point {
+      int abs_x = kp.GetPixelX(frame_w) + OFFSET_X;
+      int abs_y = kp.GetPixelY(frame_h) + OFFSET_Y;
+      return cv::Point(abs_x, abs_y);
+    };
+
+    if (visual_cfg.draw_skeleton) {
+      for (const auto &limb : limbs) {
+        if (limb.joint1 >= static_cast<int>(det.keypoints.size()) ||
+            limb.joint2 >= static_cast<int>(det.keypoints.size())) {
+          continue;
+        }
+
+        const auto &kp1 = det.keypoints[limb.joint1];
+        const auto &kp2 = det.keypoints[limb.joint2];
+
+        if (kp1.confidence >= min_keypoint_conf &&
+            kp2.confidence >= min_keypoint_conf) {
+
+          cv::Point pt1 = get_calibrated_pt(kp1);
+          cv::Point pt2 = get_calibrated_pt(kp2);
+
+          cv::line(image, pt1, pt2, limb.color, visual_cfg.line_thickness,
+                   cv::LINE_AA);
+        }
+      }
     }
 
     if (visual_cfg.draw_keypoints) {
       for (size_t i = 0; i < det.keypoints.size(); ++i) {
-        if (i >= 17)
-          break;
-
         const auto &kp = det.keypoints[i];
         if (kp.confidence >= min_keypoint_conf) {
-          cv::Point center = get_true_pt(kp);
-
-          cv::circle(image, center, visual_cfg.joint_radius,
+          cv::circle(image, get_calibrated_pt(kp), visual_cfg.joint_radius,
                      GetKeypointColor(static_cast<int>(i)), -1, cv::LINE_AA);
-
-          cv::circle(image, center, std::max(1, visual_cfg.joint_radius / 2),
-                     cv::Scalar(255, 255, 255), -1, cv::LINE_AA);
         }
       }
     }

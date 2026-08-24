@@ -39,3 +39,5 @@ hailort.log
 .clangd
 build/
 .cache/
+videos/test.mp4
+videos/test1.mp4

@@ -59,6 +59,8 @@ int main(int argc, char *argv[]) {
 
   processing::FrameSink frame_sink(app_config.capture);
   frame_sink.SetFrameCallback([&](const processing::ImageFrame &frame) {
+    auto start = std::chrono::steady_clock::now();
+
     processing::FrameBuffer buffer{.data = frame.pixel_data.data(),
                                    .size = frame.pixel_data.size(),
                                    .width = frame.width,
@@ -99,6 +101,11 @@ int main(int argc, char *argv[]) {
           app_config.inference.keypoint_threshold);
 
       streamer->SendFrame(frame_to_render);
+      auto end = std::chrono::steady_clock::now();
+      auto elapsed =
+          std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+      std::cout << "Total Elapsed Time for processing: " << elapsed.count()
+                << "ms" << "\n";
     }
   });
 

@@ -19,15 +19,13 @@ std::string PipelineEngine::GenerateCameraString() const {
   std::ostringstream ss;
 
   ss << "v4l2src device=" << config_.device << " do-timestamp=true ! ";
-
   ss << "image/jpeg,framerate=" << config_.fps << "/1 ! ";
   ss << "jpegdec ! ";
-
-  ss << "videoconvert ! ";
   ss << "videoscale ! ";
+  ss << "videoconvert ! ";
   ss << "video/x-raw,format=RGB,width=" << config_.width
      << ",height=" << config_.height << " ! ";
-
+  ss << "queue leaky=downstream max-size-buffers=1 ! ";
   ss << "appsink name=outsink max-buffers=1 drop=true sync=false";
 
   return ss.str();
@@ -38,16 +36,14 @@ std::string PipelineEngine::GenerateVideoString() const {
 
   ss << "filesrc location=" << config_.location << " ! ";
   ss << "decodebin ! ";
-
-  ss << "videoconvert ! ";
   ss << "videorate ! ";
   ss << "video/x-raw,framerate=" << config_.fps << "/1 ! ";
   ss << "videoscale ! ";
-
+  ss << "videoconvert ! ";
   ss << "video/x-raw,format=RGB,width=" << config_.width
      << ",height=" << config_.height << " ! ";
-
-  ss << "appsink name=outsink max-buffers=1 drop=true sync=true";
+  ss << "queue leaky=downstream max-size-buffers=1 ! ";
+  ss << "appsink name=outsink max-buffers=1 drop=true sync=false";
 
   return ss.str();
 }

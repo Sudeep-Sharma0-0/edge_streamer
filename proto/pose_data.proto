@@ -1,0 +1,24 @@
+syntax = "proto3";
+
+package pose;
+
+message KeypointMsg {
+  float x = 1;
+  float y = 2;
+  float confidence = 3;
+}
+
+message DetectionMsg {
+  int32 track_id = 1;
+  float confidence = 2;
+  float x_min = 3;
+  float y_min = 4;
+  float width = 5;
+  float height = 6;
+  repeated KeypointMsg keypoints = 7;
+}
+
+message InferenceResultMsg {
+  uint64 timestamp_ms = 1;
+  repeated DetectionMsg detections = 2;
+}

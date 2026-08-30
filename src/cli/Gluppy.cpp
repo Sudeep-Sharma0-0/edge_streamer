@@ -1,5 +1,9 @@
 #include "cli/Gluppy.hpp"
+#include "config/AppConfig.hpp"
+
+#include <exception>
 #include <iostream>
+#include <string>
 
 namespace cli {
 
@@ -49,8 +53,23 @@ Gluppy::ParseResult Gluppy::Parse(config::AppConfig &config) {
           GetOption("-L", "--location", config.capture.location);
     }
 
+    std::string backend_opt = GetOption("-B", "--backend", "native");
+    if (backend_opt == "tappas") {
+      config.inference.backend = config::InferenceBackend::TAPPAS;
+    } else if (backend_opt == "native" || backend_opt == "hailo") {
+      config.inference.backend = config::InferenceBackend::NATIVE_HAILO;
+    } else if (backend_opt == "mock") {
+      config.inference.backend = config::InferenceBackend::MOCK;
+    } else {
+      std::cerr << "[CLI ERROR] Unknown backend option '" << backend_opt
+                << "'. Supported: native, tappas, mock\n";
+      return ParseResult::ERROR;
+    }
+
     config.inference.model_path =
         GetOption("-m", "--model", config.inference.model_path);
+    config.inference.tappas_postprocess_so =
+        GetOption("--tappas-so", "", config.inference.tappas_postprocess_so);
     config.inference.confidence_threshold = std::stof(GetOption(
         "-c", "--conf", std::to_string(config.inference.confidence_threshold)));
     config.inference.iou_threshold = std::stof(GetOption(
@@ -58,6 +77,9 @@ Gluppy::ParseResult Gluppy::Parse(config::AppConfig &config) {
     config.inference.keypoint_threshold = std::stof(
         GetOption("-k", "--kp-conf",
                   std::to_string(config.inference.keypoint_threshold)));
+    config.inference.enabled_scales = static_cast<uint8_t>(std::stof(GetOption(
+        "-Es", "--scales",
+        std::to_string(static_cast<int>(config.inference.enabled_scales)))));
 
     std::string proto = GetOption("-s", "--stream", "mjpeg");
     if (proto == "udp") {
@@ -98,7 +120,7 @@ Gluppy::ParseResult Gluppy::Parse(config::AppConfig &config) {
 }
 
 void Gluppy::PrintHelp(const std::string &binary_name) const {
-  std::cout << "\n┌───────────────────────[ EDGE STREAMER HELP"
+  std::cout << "\n┌───────────────────────[ EDGE STREAMER HELP "
                "]───────────────────────┐\n";
   std::cout << "Usage:\n";
   std::cout << "  " << binary_name << " [options]\n\n";
@@ -110,36 +132,39 @@ void Gluppy::PrintHelp(const std::string &binary_name) const {
   std::cout << "  -H, --height INT     Capture frame height (default: 640)\n";
   std::cout
       << "  -f, --fps INT        Target capture frame rate (default: 30)\n";
-  std::cout
-      << "  -t, --type TYPE      Type of capture source. Types: 'camera', "
-         "'file' (default: camera)\n";
-  std::cout << "  -L, --location PATH  Path to the video file to be used. "
+  std::cout << "  -t, --type TYPE      Type of capture source: 'camera', "
+               "'file' (default: camera)\n";
+  std::cout << "  -L, --location PATH  Path to video file if type=file "
                "(default: 'videos/test.mp4')\n\n";
 
   std::cout << "Inference Options:\n";
+  std::cout << "  -B, --backend TYPE   Inference backend: 'native', 'tappas', "
+               "or 'mock' (default: native)\n";
   std::cout << "  -m, --model PATH     Path to Hailo compiled HEF model "
                "(default: models/yolov8m_pose.hef)\n";
+  std::cout
+      << "      --tappas-so PATH Path to TAPPAS postprocess shared object\n";
   std::cout << "  -c, --conf FLOAT     Detection confidence threshold "
                "(default: 0.50)\n";
   std::cout << "  -i, --iou FLOAT      NMS IoU threshold (default: 0.45)\n";
   std::cout << "  -k, --kp-conf FLOAT  Keypoint confidence threshold (default: "
-               "0.40)\n\n";
+               "0.40)\n";
+  std::cout << "  -Es, --scales INT    Enabled scale mask (1 through 7)\n\n";
 
   std::cout << "Streaming Options:\n";
-  std::cout << "  -s, --stream TYPE    Protocol: 'mjpeg' (HTTP), 'udp' (RTP "
-               "H.264), or 'none' (default: mjpeg)\n";
-  std::cout << "      --host IP        Target host IP address for UDP "
-               "streaming (default: 127.0.0.1)\n";
+  std::cout << "  -s, --stream TYPE    Protocol: 'mjpeg', 'udp', or 'none' "
+               "(default: mjpeg)\n";
+  std::cout << "      --host IP        Target host IP for UDP streaming "
+               "(default: 127.0.0.1)\n";
   std::cout
       << "  -p, --port INT       Streaming network port (default: 5777)\n";
   std::cout << "  -b, --bitrate INT    Encoder bitrate in kbps for H.264 "
                "(default: 2000)\n";
-  std::cout << "  -q, --quality INT    JPEG compression quality 1-100 for "
-               "MJPEG (default: 75)\n\n";
+  std::cout << "  -q, --quality INT    JPEG compression quality 1-100 "
+               "(default: 75)\n\n";
 
   std::cout << "Visualization Options:\n";
-  std::cout << "  -S, --skeleton-only  Render skeleton on black canvas without "
-               "camera video\n\n";
+  std::cout << "  -S, --skeleton-only  Render skeleton on black canvas\n\n";
 
   std::cout << "General Options:\n";
   std::cout << "  -h, --help           Display this help manual\n";

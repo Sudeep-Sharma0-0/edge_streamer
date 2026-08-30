@@ -66,12 +66,6 @@ void RtpStreamer::SendFrame(const cv::Mat &frame) {
   GstFlowReturn ret;
   g_signal_emit_by_name(appsrc_, "push-buffer", buffer, &ret);
   gst_buffer_unref(buffer);
-
-  static int frame_count = 0;
-  if (frame_count++ % 30 == 0) {
-    std::cout << "[DEBUG] RtpStreamer: Pushed native GStreamer buffer to "
-                 "network...\n";
-  }
 }
 
 void RtpStreamer::Stop() {

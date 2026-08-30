@@ -34,6 +34,9 @@ struct Detection {
 struct InferenceResult {
   uint64_t timestamp_ms = 0;
   float inference_time_ms = 0.0f;
+  float npu_time_ms{0.0f};
+  float postprocess_time_ms{0.0f};
+  size_t candidates_count{0};
   std::vector<Detection> detections;
 };
 

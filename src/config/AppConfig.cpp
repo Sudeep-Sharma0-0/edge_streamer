@@ -1,5 +1,10 @@
 #include "config/AppConfig.hpp"
+
+#include <cstdint>
+#include <iostream>
 #include <sstream>
+#include <string>
+#include <vector>
 
 namespace config {
 
@@ -21,10 +26,17 @@ bool AppConfig::Validate(std::vector<std::string> &errors) const {
     errors.push_back("Capture FPS must be within range [1, 120].");
   }
 
-  if (inference.backend == InferenceBackend::HAILO_NPU &&
+  if ((inference.backend == InferenceBackend::NATIVE_HAILO ||
+       inference.backend == InferenceBackend::TAPPAS) &&
       inference.model_path.empty()) {
     errors.push_back(
-        "Model path must be specified when using HAILO_NPU backend.");
+        "Model path must be specified when using NATIVE_HAILO or TAPPAS "
+        "backend.");
+  }
+  if (inference.backend == InferenceBackend::TAPPAS &&
+      inference.tappas_postprocess_so.empty()) {
+    errors.push_back(
+        "TAPPAS post-processing library path (--tappas-so) cannot be empty.");
   }
   if (inference.confidence_threshold < 0.0f ||
       inference.confidence_threshold > 1.0f) {
@@ -36,6 +48,10 @@ bool AppConfig::Validate(std::vector<std::string> &errors) const {
   if (inference.keypoint_threshold < 0.0f ||
       inference.keypoint_threshold > 1.0f) {
     errors.push_back("Keypoint threshold must be within range [0.0, 1.0].");
+  }
+  if (inference.enabled_scales > 7 || inference.enabled_scales < 1) {
+    errors.push_back(
+        "Invalid scales given. Please enable at least 1 and at most 3 scales.");
   }
 
   if (streaming.enabled) {
@@ -54,35 +70,66 @@ bool AppConfig::Validate(std::vector<std::string> &errors) const {
   return errors.empty();
 }
 
+static std::string EnabledScalesToString(uint8_t mask) {
+  if (mask == 0)
+    return "None (0)";
+  if (mask == 7)
+    return "All [80x80, 40x40, 20x20] (7)";
+
+  std::string result;
+  if (mask & config::SCALE_80)
+    result += "80x80 ";
+  if (mask & config::SCALE_40)
+    result += "40x40 ";
+  if (mask & config::SCALE_20)
+    result += "20x20 ";
+
+  return result + "(" + std::to_string(static_cast<int>(mask)) + ")";
+}
+
 std::string AppConfig::ToString() const {
   std::ostringstream oss;
   oss << "\n┌───────────────────────[ EDGE STREAMER CONFIG "
          "]───────────────────────┐\n";
   oss << " <Capture>\n";
-  oss << "   1. Device:           " << capture.device << "\n";
-  oss << "   2. Resolution:       " << capture.width << "x" << capture.height
+  oss << "   1. Device:            " << capture.device << "\n";
+  oss << "   2. Resolution:        " << capture.width << "x" << capture.height
       << " @ " << capture.fps << " FPS\n";
-  oss << "   3. Pixel Format:     " << capture.pixel_format << "\n";
-  oss << "   4. Source Type:      " << capture.type << "\n";
+  oss << "   3. Pixel Format:      " << capture.pixel_format << "\n";
+  oss << "   4. Source Type:       " << capture.type << "\n";
   if (capture.type != "camera") {
-    oss << "   a. File Source:      " << capture.location << "\n";
+    oss << "   a. File Source:       " << capture.location << "\n";
   }
 
   oss << " <Inference>\n";
-  oss << "   1. Backend:          "
-      << (inference.backend == InferenceBackend::HAILO_NPU ? "Hailo-8 / 8L NPU"
-                                                           : "")
-      << "\n";
-  oss << "   2. Model Path:       " << inference.model_path << "\n";
-  oss << "   3. Confidence Thresh:" << inference.confidence_threshold << "\n";
-  oss << "   4. IoU NMS Thresh:   " << inference.iou_threshold << "\n";
-  oss << "   5. Keypoint Thresh:  " << inference.keypoint_threshold << "\n";
+  oss << "   1. Backend:           ";
+  switch (inference.backend) {
+  case InferenceBackend::NATIVE_HAILO:
+    oss << "Native Hailo RT C++\n";
+    break;
+  case InferenceBackend::TAPPAS:
+    oss << "GStreamer TAPPAS (hailonet + hailofilter)\n";
+    break;
+  case InferenceBackend::MOCK:
+    oss << "Mock Engine\n";
+    break;
+  }
+  oss << "   2. Model Path:        " << inference.model_path << "\n";
+  if (inference.backend == InferenceBackend::TAPPAS) {
+    oss << "   a. Postprocess SO:    " << inference.tappas_postprocess_so
+        << "\n";
+  }
+  oss << "   3. Confidence Thresh: " << inference.confidence_threshold << "\n";
+  oss << "   4. IoU NMS Thresh:    " << inference.iou_threshold << "\n";
+  oss << "   5. Keypoint Thresh:   " << inference.keypoint_threshold << "\n";
+  oss << "   6. Enabled Scales:    "
+      << EnabledScalesToString(inference.enabled_scales) << "\n";
 
   oss << " <Streaming>\n";
-  oss << "   1. Status:           "
+  oss << "   1. Status:            "
       << (streaming.enabled ? "Enabled" : "Disabled") << "\n";
   if (streaming.enabled) {
-    oss << "   a. Protocol:         "
+    oss << "   a. Protocol:          "
         << (streaming.protocol == StreamProtocol::HTTP_MJPEG
                 ? "HTTP MJPEG Server"
                 : "UDP/RTP H.264")
@@ -91,15 +138,16 @@ std::string AppConfig::ToString() const {
         << "\n";
     oss << "   c. Bitrate / Quality:" << streaming.bitrate_kbps << " kbps / Q"
         << streaming.jpeg_quality << "\n";
-
-    oss << " <Visualization>\n";
-    oss << "   1. Overlay:          "
-        << (visual.enable_overlay ? "Enabled" : "Disabled") << "\n";
-    oss << "   2. Mode:             "
-        << (visual.skeleton_only ? "Skeleton Only (Black Background)"
-                                 : "Full Video Feed Overlay")
-        << "\n";
   }
+
+  oss << " <Visualization>\n";
+  oss << "   1. Overlay:           "
+      << (visual.enable_overlay ? "Enabled" : "Disabled") << "\n";
+  oss << "   2. Mode:              "
+      << (visual.skeleton_only ? "Skeleton Only (Black Canvas)"
+                               : "Full Video Feed Overlay")
+      << "\n";
+
   oss << "============================================================\n";
   return oss.str();
 }

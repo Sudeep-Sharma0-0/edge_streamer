@@ -20,6 +20,9 @@ public:
   virtual ~IInferenceEngine() = default;
 
   virtual bool Initialize(const config::InferenceConfig &config) = 0;
+  virtual bool Initialize(const config::AppConfig &app_config) {
+    return Initialize(app_config.inference);
+  }
   virtual bool Initialize(const std::string &model_path, float conf_thresh,
                           float iou_thresh) = 0;
   virtual InferenceResult Infer(const FrameBuffer &frame) = 0;

@@ -1,4 +1,5 @@
 #include "processing/HailoInferenceEngine.hpp"
+#include "config/AppConfig.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -42,15 +43,16 @@ struct ScaleHead {
   const char *dfl_layer;
   const char *cls_layer;
   const char *kpt_layer;
+  config::ScaleFlags flag;
 };
 
 constexpr ScaleHead kScales[3] = {
-    {80, 8, "yolov8m_pose/conv59", "yolov8m_pose/conv60",
-     "yolov8m_pose/conv61"},
+    {80, 8, "yolov8m_pose/conv59", "yolov8m_pose/conv60", "yolov8m_pose/conv61",
+     config::SCALE_80},
     {40, 16, "yolov8m_pose/conv75", "yolov8m_pose/conv76",
-     "yolov8m_pose/conv77"},
+     "yolov8m_pose/conv77", config::SCALE_40},
     {20, 32, "yolov8m_pose/conv90", "yolov8m_pose/conv91",
-     "yolov8m_pose/conv92"}};
+     "yolov8m_pose/conv92", config::SCALE_20}};
 
 } // namespace
 
@@ -103,6 +105,13 @@ bool HailoInferenceEngine::ConfigureStreams() {
   if (input_names.empty())
     return false;
 
+  /**NOTE
+   * If there are more than one input streams, a for-loop can be added in this
+   * position to handle those input streams properly. The current code
+   * implementation is assuming we will be using ony one input stream i.e. the
+   * first one.
+   */
+
   auto input_stream = infer_model_->input(input_names[0]);
   input_stream->set_format_type(HAILO_FORMAT_TYPE_UINT8);
   input_stream->set_format_order(HAILO_FORMAT_ORDER_NHWC);
@@ -142,7 +151,7 @@ bool HailoInferenceEngine::ConfigureStreams() {
 }
 
 InferenceResult HailoInferenceEngine::Infer(const FrameBuffer &frame) {
-  auto start_time = std::chrono::steady_clock::now();
+  auto start_total = std::chrono::steady_clock::now();
   InferenceResult result{.timestamp_ms = frame.timestamp_ms};
 
   if (!is_initialized_) {
@@ -157,13 +166,23 @@ InferenceResult HailoInferenceEngine::Infer(const FrameBuffer &frame) {
   if (status != HAILO_SUCCESS)
     return result;
 
+  auto start_npu = std::chrono::steady_clock::now();
   status =
       configured_infer_model_->run(*bindings_, std::chrono::milliseconds(1000));
   if (status != HAILO_SUCCESS)
     return result;
+  auto end_npu = std::chrono::steady_clock::now();
 
+  result.npu_time_ms =
+      std::chrono::duration<float, std::milli>(end_npu - start_npu).count();
+
+  auto start_post = std::chrono::steady_clock::now();
   std::vector<Detection> candidates;
   for (const auto &scale : kScales) {
+    if (!(config_.enabled_scales & scale.flag)) {
+      continue;
+    }
+
     DecodeScale(scale.grid, scale.stride,
                 reinterpret_cast<const float *>(
                     output_buffers_[scale.dfl_layer].data()),
@@ -176,9 +195,13 @@ InferenceResult HailoInferenceEngine::Infer(const FrameBuffer &frame) {
 
   ApplyNMS(candidates, result.detections);
 
-  result.inference_time_ms = std::chrono::duration<float, std::milli>(
-                                 std::chrono::steady_clock::now() - start_time)
-                                 .count();
+  auto end_post = std::chrono::steady_clock::now();
+  result.postprocess_time_ms =
+      std::chrono::duration<float, std::milli>(end_post - start_post).count();
+
+  auto end_total = std::chrono::steady_clock::now();
+  result.inference_time_ms =
+      std::chrono::duration<float, std::milli>(end_total - start_total).count();
 
   return result;
 }

@@ -189,4 +189,12 @@ void HttpStreamer::Stop() {
   client_threads_.clear();
 }
 
+void HttpStreamer::NotifyEmergencyFall(
+    uint64_t timestamp_ms,
+    const std::vector<streaming::Detection> &detections) {
+  std::cout << "[HttpStreamer] Fall alert triggered (Not yet implemented for "
+               "HTTP).\n";
+}
+bool HttpStreamer::CheckRemoteResolve() { return false; }
+
 } // namespace streaming

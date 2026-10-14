@@ -20,6 +20,9 @@ public:
   void SendFrame(const cv::Mat &frame) override;
   void Stop() override;
   bool IsRunning() const override { return is_running_; }
+  void NotifyEmergencyFall(uint64_t timestamp_ms,
+                           const std::vector<Detection> &detections) override;
+  bool CheckRemoteResolve() override;
 
 private:
   void ServerLoop();

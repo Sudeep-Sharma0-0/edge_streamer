@@ -1,85 +1,138 @@
 #include "streaming/RtpStreamer.hpp"
+#include "streaming/Serializer.hpp"
 #include <iostream>
+#include <opencv2/imgproc.hpp>
+#include <ottersec/api.h>
+#include <vector>
 
 namespace streaming {
 
 RtpStreamer::RtpStreamer(const config::StreamingConfig &stream_cfg)
-    : config_(stream_cfg) {
-  gst_init(nullptr, nullptr);
-}
+    : config_(stream_cfg), frame_counter_(0), is_running_(false) {}
 
 RtpStreamer::~RtpStreamer() { Stop(); }
 
 bool RtpStreamer::Start() {
-  std::string pipeline_str =
-      "appsrc name=mysrc is-live=true do-timestamp=true format=time ! "
-      "videoconvert ! "
-      "video/x-raw,format=I420 ! "
-      "x264enc tune=zerolatency speed-preset=ultrafast bframes=0 "
-      "key-int-max=30 bitrate=2000 ! "
-      "rtph264pay config-interval=1 pt=96 ! "
-      "udpsink host=" +
-      config_.host + " port=" + std::to_string(config_.port) + " sync=false";
+  if (is_running_) {
+    std::cout
+        << "[INFO] Streamer is already running. Ignoring duplicate Start().\n";
+    return true;
+  }
 
-  GError *err = nullptr;
-  pipeline_ = gst_parse_launch(pipeline_str.c_str(), &err);
-  if (err) {
-    std::cerr << "[ERROR] GStreamer pipeline parse failed: " << err->message
-              << "\n";
-    g_error_free(err);
+  OtterHandshakeConfig auth_cfg = {0};
+  auth_cfg.handshake_port = 8443;
+  auth_cfg.auth_timeout_ms = 5000;
+  auth_cfg.cert_path = "/home/cloud9/sudip/edge_streamer/certs/server.crt";
+  auth_cfg.key_path = "/home/cloud9/sudip/edge_streamer/certs/server.key";
+
+  if (ottersec_init(&auth_cfg) != 0) {
+    std::cerr << "[ERROR] Failed to initialize OtterSec.\n";
     return false;
   }
 
-  appsrc_ = gst_bin_get_by_name(GST_BIN(pipeline_), "mysrc");
+  if (ottersec_start_control_server(8080) != 0) {
+    std::cerr << "[ERROR] Failed to start OtterSec Control Server.\n";
+    return false;
+  }
 
-  GstCaps *caps =
-      gst_caps_new_simple("video/x-raw", "format", G_TYPE_STRING, "BGR",
-                          "width", G_TYPE_INT, 640, "height", G_TYPE_INT, 640,
-                          "framerate", GST_TYPE_FRACTION, 30, 1, nullptr);
-  g_object_set(G_OBJECT(appsrc_), "caps", caps, nullptr);
-  gst_caps_unref(caps);
-
-  gst_element_set_state(pipeline_, GST_STATE_PLAYING);
   is_running_ = true;
+  std::cout
+      << "[INFO] OtterSec initialized and operating in Silent Tripwire mode.\n";
 
-  std::cout << "[INFO] Native GStreamer RTP initialized. Target: "
-            << config_.host << ":" << config_.port << "\n";
   return true;
 }
 
 void RtpStreamer::SendFrame(const cv::Mat &frame) {
-  if (!is_running_ || frame.empty() || !appsrc_)
+  if (!is_running_ || frame.empty())
     return;
 
-  cv::Mat strict_frame;
+  frame_counter_++;
+
   if (frame.cols != 640 || frame.rows != 640) {
-    cv::resize(frame, strict_frame, cv::Size(640, 640));
+    cv::resize(frame, active_frame_, cv::Size(640, 640));
   } else {
-    strict_frame = frame;
+    active_frame_ = frame.clone();
   }
 
-  guint size = strict_frame.total() * strict_frame.elemSize();
-  GstBuffer *buffer = gst_buffer_new_allocate(nullptr, size, nullptr);
+  cv::cvtColor(active_frame_, active_frame_, cv::COLOR_BGR2RGB);
 
-  gst_buffer_fill(buffer, 0, strict_frame.data, size);
+  OtterFrameBuffer out_frame = {0};
+  out_frame.width = 640;
+  out_frame.height = 640;
+  out_frame.surface_ptr = active_frame_.data;
 
-  GstFlowReturn ret;
-  g_signal_emit_by_name(appsrc_, "push-buffer", buffer, &ret);
-  gst_buffer_unref(buffer);
+  ottersec_push_frame(&out_frame);
 }
 
+void RtpStreamer::NotifyEmergencyFall(
+    uint64_t timestamp_ms,
+    const std::vector<streaming::Detection> &detections) {
+  if (!is_running_)
+    return;
+
+  std::cout
+      << "[INFO] Fall Detected! Triggering OtterSec emergency protocol.\n";
+
+  std::vector<OtterDetection> otter_dets;
+  std::vector<std::vector<OtterKeypoint>> all_kpts;
+
+  all_kpts.reserve(detections.size());
+
+  for (const auto &d : detections) {
+    std::vector<OtterKeypoint> kpts;
+    kpts.reserve(d.keypoints.size());
+    for (const auto &k : d.keypoints) {
+      kpts.push_back({k.x, k.y, k.confidence});
+    }
+
+    all_kpts.push_back(std::move(kpts));
+
+    OtterDetection od = {d.track_id,
+                         d.confidence,
+                         d.x_min,
+                         d.y_min,
+                         d.width,
+                         d.height,
+                         all_kpts.back().data(),
+                         all_kpts.back().size()};
+
+    otter_dets.push_back(od);
+  }
+
+  OtterInferenceResult result = {0};
+  result.timestamp_ms = timestamp_ms;
+  result.fall_detected = 1;
+  result.detections = otter_dets.data();
+  result.num_detections = otter_dets.size();
+
+  ottersec_send_telemetry(&result);
+
+  OtterFallEvent event = {0};
+  event.fall_detected = 1;
+
+  if (!detections.empty()) {
+    event.confidence = detections[0].confidence;
+    event.bbox_x = static_cast<int>(detections[0].x_min);
+    event.bbox_y = static_cast<int>(detections[0].y_min);
+    event.bbox_w = static_cast<int>(detections[0].width);
+    event.bbox_h = static_cast<int>(detections[0].height);
+  }
+
+  ottersec_notify_fall(&event);
+}
+
+bool RtpStreamer::IsRunning() const { return is_running_; }
+
 void RtpStreamer::Stop() {
-  is_running_ = false;
-  if (pipeline_) {
-    gst_element_send_event(pipeline_, gst_event_new_eos());
-    gst_element_set_state(pipeline_, GST_STATE_NULL);
-    gst_object_unref(pipeline_);
-    pipeline_ = nullptr;
+  if (is_running_) {
+    is_running_ = false;
+    ottersec_stop_control_server();
+    ottersec_terminate();
   }
-  if (appsrc_) {
-    gst_object_unref(appsrc_);
-    appsrc_ = nullptr;
-  }
+}
+
+bool RtpStreamer::CheckRemoteResolve() {
+  return ottersec_check_remote_resolve() == 1;
 }
 
 } // namespace streaming

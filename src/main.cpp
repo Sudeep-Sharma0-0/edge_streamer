@@ -7,7 +7,6 @@
 #include "processing/TappasInferenceEngine.hpp"
 #include "streaming/Serializer.hpp"
 #include "streaming/StreamerFactory.hpp"
-#include "streaming/TCPServer.hpp"
 
 #include <atomic>
 #include <csignal>
@@ -79,13 +78,6 @@ int main(int argc, char *argv[]) {
     return -1;
   }
 
-  streaming::TcpProtoServer proto_server;
-  if (!proto_server.Start(8080)) {
-    std::cerr << "[FATAL] Failed to start Protobuf TCP server on port 8080.\n";
-    return -1;
-  }
-  std::cout << "[INFO] Protobuf TCP server listening on port 8080...\n";
-
   capture::VideoCapture video_capture;
   if (!video_capture.Initialize(app_config.capture)) {
     std::cerr << "[FATAL] Failed to initialize video capture module.\n";
@@ -132,8 +124,6 @@ int main(int argc, char *argv[]) {
     processing::InferenceResult result = inference_engine->Infer(buffer);
     auto t_keypoints_ready = std::chrono::steady_clock::now();
 
-    auto t_proto_start = std::chrono::steady_clock::now();
-
     streaming::InferenceResult pose_res;
     pose_res.timestamp_ms = frame.timestamp_ms;
     for (const auto &det : result.detections) {
@@ -151,8 +141,38 @@ int main(int argc, char *argv[]) {
       pose_res.detections.push_back(p_det);
     }
 
-    std::string proto_payload = streaming::PoseSerializer::Serialize(pose_res);
-    proto_server.Broadcast(proto_payload);
+    static bool alert_triggered = false;
+
+    static int frames_since_alert = 0;
+
+    bool real_fall_detected = false;
+
+    if (pose_res.detections.size() > 0)
+      real_fall_detected = true;
+
+    if (!alert_triggered && streamer && streamer->IsRunning() &&
+        real_fall_detected) {
+      frames_since_alert++;
+      std::cout << "\n[ALERT] Real Fall Event Detected! Triggering Emergency "
+                   "Protocol...\n";
+      if (frames_since_alert == 1 || frames_since_alert % 30 == 0) {
+        streamer->NotifyEmergencyFall(pose_res.timestamp_ms,
+                                      pose_res.detections);
+      }
+      alert_triggered = true;
+    }
+
+    if (alert_triggered && streamer && streamer->CheckRemoteResolve()) {
+      std::cout << "\n[INFO] Backend acknowledged emergency. Tearing down "
+                   "secure tunnels...\n";
+
+      streamer->Stop();
+      streamer->Start();
+
+      std::cout << "[INFO] System Re-Armed and waiting for next event.\n";
+      alert_triggered = false;
+      frames_since_alert = 0;
+    }
 
     float post_capture_to_keypoints_ms =
         std::chrono::duration<float, std::milli>(t_keypoints_ready -
@@ -271,16 +291,11 @@ int main(int argc, char *argv[]) {
   }
 
   std::cout << "\n[INFO] Shutting down EdgeStreamer pipeline...\n";
-  video_capture.Stop();
-  frame_sink.Detach();
   if (streamer) {
     streamer->Stop();
   }
-
-  std::cout << "\n[INFO] Shutting down EdgeStreamer pipeline...\n";
-  proto_server.Stop();
-  video_capture.Stop();
   frame_sink.Detach();
+  video_capture.Stop();
 
   std::cout << "[INFO] Clean exit completed.\n";
   return 0;

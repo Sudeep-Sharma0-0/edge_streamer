@@ -38,6 +38,7 @@ target_include_directories(
   ${GSTREAMER_INCLUDE_DIRS}
   ${GLIB_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS}
+  ~/sudip/ottersec/include
 )
 
 target_link_libraries(
@@ -48,6 +49,7 @@ target_link_libraries(
   ${OpenCV_LIBS}
   protobuf::libprotobuf
   httplib::httplib
+  ~/sudip/ottersec/build/libottersec.so
 )
 
 # CMake custom log commands

@@ -1,9 +1,11 @@
 #pragma once
+
 #include "config/AppConfig.hpp"
 #include "streaming/INetworkStreamer.hpp"
-#include <gst/app/gstappsrc.h>
-#include <gst/gst.h>
-#include <opencv2/opencv.hpp>
+#include "streaming/Serializer.hpp"
+#include <atomic>
+#include <cstdint>
+#include <opencv2/core.hpp>
 
 namespace streaming {
 
@@ -13,18 +15,23 @@ public:
   ~RtpStreamer() override;
 
   bool Start() override;
+
   void SendFrame(const cv::Mat &frame) override;
+
+  void NotifyEmergencyFall(uint64_t timestamp_ms,
+                           const std::vector<Detection> &detections) override;
+
   void Stop() override;
 
-  bool IsRunning() const override { return is_running_; }
+  bool IsRunning() const override;
+
+  bool CheckRemoteResolve() override;
 
 private:
   config::StreamingConfig config_;
-  bool is_running_ = false;
-
-  GstElement *pipeline_ = nullptr;
-  GstElement *appsrc_ = nullptr;
-  GstClockTime timestamp_ = 0;
+  std::atomic<bool> is_running_{false};
+  uint32_t frame_counter_{0};
+  cv::Mat active_frame_;
 };
 
 } // namespace streaming
